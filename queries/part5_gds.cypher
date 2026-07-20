@@ -72,3 +72,44 @@ LIMIT 10;
 // Крок 5: видаляємо проєкцію та тимчасові ребра
 CALL gds.graph.drop('userSimilarity');
 MATCH ()-[sim:SIMILAR]-() DELETE sim;
+
+//5.3. Найкоротший шлях між користувачами
+// 1. Матеріалізуємо оптимізовані ребра (працює швидко)
+MATCH (u1:User)-[r1:RATED]->(m:Movie)<-[r2:RATED]-(u2:User)
+WHERE r1.rating = 5 AND r2.rating = 5 
+  AND elementId(u1) < elementId(u2)
+  AND COUNT { (m)<-[:RATED]-() } < 500
+WITH u1, u2, count(m) AS weight
+ORDER BY weight DESC
+LIMIT 10000
+MERGE (u1)-[sim:SIMILAR]-(u2)
+SET sim.weight = weight;
+
+// 2. Створюємо проєкцію
+CALL gds.graph.project(
+  'userGraph',
+  'User',
+  { SIMILAR: { orientation: 'UNDIRECTED', properties: 'weight' } }
+)
+YIELD graphName, nodeCount, relationshipCount;
+
+// Крок 2: Запуск алгоритму Дейкстри
+MATCH (source:User)-[:SIMILAR*2]-(target:User)
+WHERE source.userId <> target.userId
+WITH source, target LIMIT 1
+CALL gds.shortestPath.dijkstra.stream('userGraph', {
+    sourceNode: source,
+    targetNode: target,
+    relationshipWeightProperty: 'weight'
+})
+YIELD index, sourceNode, targetNode, totalCost, nodeIds, costs, path
+RETURN
+    source.userId AS SourceUser,
+    target.userId AS TargetUser,
+    [nodeId IN nodeIds | gds.util.asNode(nodeId).userId] AS PathUserIDs,
+    size(nodeIds) - 2 AS IntermediateNodesCount,
+    totalCost AS PathWeight;
+
+// Крок 3: прибирання
+CALL gds.graph.drop('userGraph');
+MATCH ()-[sim:SIMILAR]-() DELETE sim;
